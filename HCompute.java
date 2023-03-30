@@ -1,6 +1,3 @@
-package org.example;
-
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
@@ -24,6 +21,14 @@ public class HCompute {
 
     static final String targetYear = "2008";
 
+    /**
+     * Because we split the hbase table into multiple regions by airline id in H populate, the records
+     * sent to current map task are all under the same flight; also because the built-in sort of hbase
+     * table, we don't need to sort the records again, we just need to iterate the records from start
+     * to end and put the average delay of each month into a string, then pass the string to reducer.
+     * Emit key:   airline id, e.g. AA
+     * Emit value: pairs of month and average delay, e.g. (1,10),(2,20),(3,30)
+     */
     public static class MyMapper extends TableMapper<Text, Text> {
         private Text outputKey = new Text();
         private Text outputValue = new Text();
@@ -45,7 +50,11 @@ public class HCompute {
             targetAirline = "";
         }
 
-        public void map(ImmutableBytesWritable row, Result value, Context context) throws InterruptedException, IOException {
+        /**
+         * Each map function call will only deal with one record, you can treat this as
+         * an iterator of the records in HBase.
+         */
+        public void map(ImmutableBytesWritable row, Result value, Context context) {
             counter += 1;
             String airline = Bytes.toString(value.getValue(Bytes.toBytes(
                     targetYear), Bytes.toBytes("airline")));
@@ -77,6 +86,9 @@ public class HCompute {
             }
         }
 
+        /**
+         * Sent the average delay string to reducer at the end of current map task
+         */
         @Override
         protected void cleanup(Context context) throws IOException,
                 InterruptedException {
@@ -93,6 +105,10 @@ public class HCompute {
         }
     }
 
+    /**
+     * The only thing reducer does is to write the key value pair received from mapper
+     * into output file.
+     */
     public static class MyReducer extends Reducer<Text, Text, Text, Text> {
 
         public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
@@ -112,7 +128,7 @@ public class HCompute {
         Configuration config = HBaseConfiguration.create();
         config.set(TableInputFormat.INPUT_TABLE, tableNameStr);
 //        config.set("hbase.zookeeper.quorum", "localhost");
-        config.set("hbase.zookeeper.quorum", "172.31.5.44");
+        config.set("hbase.zookeeper.quorum", "172.31.8.202");
         config.set("hbase.zookeeper.property.clientPort", "2181");
         String hbaseSite = "/etc/hbase/conf/hbase-site.xml";
         config.addResource(new File(hbaseSite).toURI().toURL());

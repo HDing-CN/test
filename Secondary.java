@@ -1,5 +1,3 @@
-package org.example;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.DoubleWritable;
@@ -29,6 +27,9 @@ public class Secondary {
 
     public Secondary() throws ParseException {}
 
+    /**
+     * Enum used to help indexing the csv columns
+     */
     public enum FlightField {
         YEAR(0),
         QUARTER(1),
@@ -116,6 +117,10 @@ public class Secondary {
         return result;
     }
 
+    /**
+     * Key used to represent each record, it is writable and comparable.
+     * Members: airline id, month
+     */
     public static class FlightKey implements WritableComparable<FlightKey> {
 
         private String airline;
@@ -292,6 +297,9 @@ public class Secondary {
         }
     }
 
+    /**
+     * Group comparator used to send records of the same airline id to the same reducer
+     */
     public static class FlightGroupingComparator extends WritableComparator {
 
         public FlightGroupingComparator() {
@@ -306,6 +314,11 @@ public class Secondary {
         }
     }
 
+    /**
+     * Sort comparator used to sort the records by month
+     * Because we have already filtered records whose year != 2008,
+     * we don't need to care about the year
+     */
     public static class FlightSortComparator extends WritableComparator {
 
         public FlightSortComparator() {
@@ -323,6 +336,9 @@ public class Secondary {
         }
     }
 
+    /**
+     * Customized partitioner to put records with the same airline id to the same partition
+     */
     public static class FlightKeyPartitioner extends Partitioner<FlightKey,
             FlightDataWritable> {
 

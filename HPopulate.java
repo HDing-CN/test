@@ -1,5 +1,3 @@
-package org.example;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
@@ -15,7 +13,6 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Job;
@@ -40,6 +37,9 @@ public class HPopulate {
 
     public HPopulate() throws ParseException {}
 
+    /**
+     * Enum used to help indexing the csv columns
+     */
     public enum FlightField {
         YEAR(0),
         QUARTER(1),
@@ -127,6 +127,10 @@ public class HPopulate {
         return result;
     }
 
+    /**
+     * Customized writable class used to pass data to reducer and write records
+     * hbase table there based on the writable data.
+     */
     public static class FlightInfoWritable implements Writable {
         Text airline;
         IntWritable year;
@@ -187,6 +191,10 @@ public class HPopulate {
             super.setup(context);
         }
 
+        /**
+         * Emit key:   airline-year-month, e.g. AA-2008-01
+         * Emit value: FlightInfoWritable. including airline id, year, month, isCancelledOrDiverted, arriveDelay.
+         */
         public void map(LongWritable key, Text value, Context context
         ) throws IOException, InterruptedException {
             String[] lines = value.toString().split("\n");
@@ -225,7 +233,7 @@ public class HPopulate {
 
     public static class FlightDelayTimeReducer
             extends Reducer<Text, FlightInfoWritable, Text,
-            NullWritable> {
+            Text> {
         Text emitKey = new Text();
         Text emitValue = new Text();
 
@@ -241,7 +249,7 @@ public class HPopulate {
 
             Configuration config = HBaseConfiguration.create();
 //            config.set("hbase.zookeeper.quorum", "localhost");
-            config.set("hbase.zookeeper.quorum", "172.31.5.44");
+            config.set("hbase.zookeeper.quorum", "172.31.8.202");
             config.set("hbase.zookeeper.property.clientPort", "2181");
             String hbaseSite = "/etc/hbase/conf/hbase-site.xml";
             config.addResource(new File(hbaseSite).toURI().toURL());
@@ -250,6 +258,9 @@ public class HPopulate {
             table = connection.getTable(tableName);
         }
 
+        /**
+         * Write records in the same month under the same airline into hbase
+         */
         public void reduce(Text key, Iterable<FlightInfoWritable> values,
                            Context context
         ) throws IOException, InterruptedException {
@@ -279,9 +290,11 @@ public class HPopulate {
             }
             System.out.println("Write records of " + key.toString() + " to " +
                     "table " + tableNameStr);
+            // Put a batch of records into hbase table to make the performance better
             table.put(putList);
             emitKey.set(key.toString());
-            context.write(emitKey, NullWritable.get());
+            emitValue.set("test");
+            context.write(emitKey, emitValue);
         }
 
         @Override
@@ -292,12 +305,15 @@ public class HPopulate {
         }
     }
 
+    /**
+     * Customized partitioner to put records with the same airline id to the same partition
+     */
     public static class FlightKeyPartitioner extends Partitioner<Text,
             FlightInfoWritable> {
 
         @Override
         public int getPartition(Text key, FlightInfoWritable value, int numPartitions) {
-            return (key.hashCode()) % numPartitions;
+            return (key.hashCode() & Integer.MAX_VALUE) % numPartitions;
         }
     }
 
@@ -310,10 +326,9 @@ public class HPopulate {
         String inputPath = args[0];
         String outputPath = args[1];
         String tableNameStr = args[2];
-        System.out.println("hding -> config" + tableNameStr);
         Configuration conf = HBaseConfiguration.create();
 //        conf.set("hbase.zookeeper.quorum", "localhost");
-        conf.set("hbase.zookeeper.quorum", "172.31.5.44");
+        conf.set("hbase.zookeeper.quorum", "172.31.8.202");
         conf.set("hbase.zookeeper.property.clientPort", "2181");
         String hbaseSite = "/etc/hbase/conf/hbase-site.xml";
         conf.addResource(new File(hbaseSite).toURI().toURL());
@@ -322,39 +337,47 @@ public class HPopulate {
         Connection connection = ConnectionFactory.createConnection(conf);
         Admin admin = connection.getAdmin();
         if (admin.tableExists(tableName)) {
+            System.out.println("Delete table");
             admin.disableTable(tableName);
             admin.deleteTable(tableName);
         }
         HTableDescriptor tableDescriptor = new HTableDescriptor(tableName);
+        // Create column family list by year, so that we can use this column family
+        // to filter records that are not in 2008.
         List<String> columnFamilyList = Arrays.asList(
                 "2000","2001","2002","2003","2004",
                 "2005","2006","2007","2008","2009");
         for (String family : columnFamilyList) {
             tableDescriptor.addFamily(new HColumnDescriptor(family));
         }
+        // Split the HBase table into multiple regions based on the airline id,
+        // so that the data under the same airline will be put into the same region,
+        // then all these records will be sent to the same map task.
         byte[][] splits = new byte[][]{
-            Bytes.toBytes("9E"),
-            Bytes.toBytes("AA"),
-            Bytes.toBytes("AQ"),
-            Bytes.toBytes("AS"),
-            Bytes.toBytes("B6"),
-            Bytes.toBytes("CO"),
-            Bytes.toBytes("DL"),
-            Bytes.toBytes("EV"),
-            Bytes.toBytes("F9"),
-            Bytes.toBytes("FL"),
-            Bytes.toBytes("HA"),
-            Bytes.toBytes("MQ"),
-            Bytes.toBytes("NW"),
-            Bytes.toBytes("OH"),
-            Bytes.toBytes("OO"),
-            Bytes.toBytes("UA"),
-            Bytes.toBytes("US"),
-            Bytes.toBytes("WN"),
-            Bytes.toBytes("XE"),
-            Bytes.toBytes("YV")
+                Bytes.toBytes("9E"),
+                Bytes.toBytes("AA"),
+                Bytes.toBytes("AQ"),
+                Bytes.toBytes("AS"),
+                Bytes.toBytes("B6"),
+                Bytes.toBytes("CO"),
+                Bytes.toBytes("DL"),
+                Bytes.toBytes("EV"),
+                Bytes.toBytes("F9"),
+                Bytes.toBytes("FL"),
+                Bytes.toBytes("HA"),
+                Bytes.toBytes("MQ"),
+                Bytes.toBytes("NW"),
+                Bytes.toBytes("OH"),
+                Bytes.toBytes("OO"),
+                Bytes.toBytes("UA"),
+                Bytes.toBytes("US"),
+                Bytes.toBytes("WN"),
+                Bytes.toBytes("XE"),
+                Bytes.toBytes("YV")
         };
+        System.out.println("Create table");
         admin.createTable(tableDescriptor, splits);
+        connection.close();
 
         Configuration conf1 = new Configuration();
         conf1.set("hbase.table.name", tableNameStr);
@@ -368,14 +391,15 @@ public class HPopulate {
         job1.setMapOutputValueClass(FlightInfoWritable.class);
 
         job1.setOutputKeyClass(Text.class);
-        job1.setOutputValueClass(NullWritable.class);
+        job1.setOutputValueClass(Text.class);
 
         job1.setPartitionerClass(FlightKeyPartitioner.class);
 
         FileInputFormat.addInputPath(job1, new Path(inputPath));
         FileOutputFormat.setOutputPath(job1, new Path(outputPath));
 
+        System.out.println("Start job");
         boolean success = job1.waitForCompletion(true);
-        System.exit(success ? 1: 0);
+        System.out.println("Finish job, success : " + (success ? "True" : "False"));
     }
 }
